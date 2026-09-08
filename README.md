@@ -1434,27 +1434,40 @@ Prism works alongside these tools — use whichever fits your workflow.
 
 ### Web IDE — Prism Coder
 
-A browser-based IDE at [synalux.ai/coder](https://synalux.ai/coder). Import any GitHub repo and get:
+Open [synalux.ai/coder](https://synalux.ai/coder), sign in, connect GitHub, and import a repository you can access. Select a branch, open a file, edit, and save back to GitHub.
 
-- **Monaco editor** with multi-tab, split view, syntax highlighting, and VS Code keybindings
-- **In-browser Node.js** via WebContainer (your code runs in the browser sandbox, not on a server)
-- **Integrated terminal** — WebContainer shell in-browser; optional server PTY via WebSocket when connected to a dev server
-- **AI Agent Mode** — describe a task and the agent creates files, runs type-checks, and verifies
-- **Source control** — commit, branch, push/pull, stash, blame, tag management
-- **Live Share** — real-time collaborative editing with session links
-- **Node.js debugger** via Chrome DevTools Protocol
-- **Tasks runner** (VS Code `tasks.json` compatible), **Problems panel** (Monaco diagnostics)
-- **12-language i18n** — full UI localization
+- **Monaco editor** — multiple tabs, split view, syntax highlighting, and familiar VS Code keybindings.
+- **GitHub editing** — branch selection, file saves, history, and conflict protection. If a file changes remotely, a conflicting save keeps your local draft for recovery. Binary renames preserve bytes, and Unicode paths are supported.
+- **AI Agent Mode** — describe a task, review proposed file changes, apply selected changes, and save on an isolated agent branch. Rollback discards that branch and returns to your previous work.
+- **Live Share** — start a session and share its invite with repository members for synchronized edits and labeled remote cursors. First-party signaling is enabled on the hosted IDE.
+- **In-browser Node.js and terminal** — WebContainer runs package scripts and previews when the browser supports its runtime. The optional server PTY and Node.js debugger require a connected development server.
+- **Tasks and diagnostics** — a `tasks.json` runner and a Problems panel for Monaco diagnostics; localized interface strings are available in 12 languages.
+
+**Production session, September 8, 2026.** The following screenshots were captured from the live IDE using a private test repository. The session exercised GitHub import/save, conflict recovery, binary rename, Unicode files, Agent review/apply/save/rollback, and Live Share text and cursors in both directions.
+
+**Review an Agent proposal before applying it.** The diff below proposes a new `add(a, b)` function. Selected changes were then applied and the exact file was saved to the agent branch; rollback was checked afterward.
 
 <p align="center">
-  <img src="docs/screenshots/agent-mode.png" alt="Prism Coder IDE — Agent Mode creating a component with auto-fix and type-checking" width="500" />
+  <img src="docs/screenshots/coder-agent-diff-20260908.png" alt="Live Coder Agent diff showing a proposed add function and Apply selected changes" width="900" />
+</p>
+
+**Keep your draft when a remote edit conflicts.** The status bar reports the conflict while the unsaved local edit remains in the editor. Draft recovery was also checked after reloading.
+
+<p align="center">
+  <img src="docs/screenshots/coder-conflict-draft-20260908.png" alt="Coder file editor retaining an unsaved draft with a remote-change conflict message" width="900" />
+</p>
+
+**See collaborators' edits and cursors.** The host receives the guest's edit and cursor in the first capture. The guest receives the host's return edit and cursor in the second. These captures show two Safari tabs using the same authorized account; separate-user and cross-device connections were not covered by this run.
+
+<p align="center">
+  <img src="docs/screenshots/coder-liveshare-host-20260908.png" alt="Live Share host with two participants and the guest cursor on a synchronized edit" width="900" />
 </p>
 
 <p align="center">
-  <img src="docs/screenshots/collaboration.png" alt="Prism Coder IDE — Live Share with team members and real-time cursor tracking" width="500" />
+  <img src="docs/screenshots/coder-liveshare-guest-20260908.png" alt="Live Share guest receiving the host return edit and labeled remote cursor" width="900" />
 </p>
 
-Standard+ plans get cloud AI and higher rate limits. Free tier works with local Ollama. Code execution uses the in-browser WebContainer by default; Live Share and the optional PTY terminal connect to external servers when explicitly enabled.
+**Runtime requirements.** Chrome or Edge is recommended for WebContainer package installation, tests, and previews; see [WebContainer browser support](https://developer.stackblitz.com/platform/webcontainers/browser-support). Safari editing and the workflows shown above were exercised, but npm installation still failed in this Safari session. Successful editing does not establish successful code execution. Agent test and type-check execution also depends on the runtime. Cloud AI requires the applicable plan and configured service; local Ollama requires an explicit connection.
 
 ### VS Code Extension — Synalux
 
