@@ -60,6 +60,9 @@ import { dirname, join } from "node:path";
  */
 const CANONICAL_NPM = "10.9.8";
 
+/** Generous against a slow registry, tight against a dead one. */
+const NPM_TIMEOUT_MS = 5 * 60 * 1000;
+
 const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
 const LOCKFILE = join(REPO_ROOT, "package-lock.json");
 
@@ -74,12 +77,24 @@ function runPinnedNpm(args, { capture = false } = {}) {
     const proc = spawnSync(
         "npx",
         ["--yes", `npm@${CANONICAL_NPM}`, ...args],
-        { encoding: "utf8", cwd: REPO_ROOT, maxBuffer: 64 * 1024 * 1024 },
+        {
+            encoding: "utf8",
+            cwd: REPO_ROOT,
+            maxBuffer: 64 * 1024 * 1024,
+            // A registry that accepts the connection and never answers would
+            // otherwise hold the step — and the runner — until the job's own
+            // limit. A cold fetch of npm plus a full resolve measures ~10s.
+            timeout: NPM_TIMEOUT_MS,
+            killSignal: "SIGKILL",
+        },
     );
     if (proc.error) {
+        const timedOut = proc.error.code === "ETIMEDOUT";
         throw new Error(
-            `could not run npx npm@${CANONICAL_NPM}: ${proc.error.message}\n`
-            + "This check needs network access to fetch the pinned npm.",
+            (timedOut
+                ? `npx npm@${CANONICAL_NPM} ${args.join(" ")} did not finish within ${NPM_TIMEOUT_MS / 1000}s and was killed.\n`
+                : `could not run npx npm@${CANONICAL_NPM}: ${proc.error.message}\n`)
+            + "This check needs network access to fetch the pinned npm and resolve the tree.",
         );
     }
     if (proc.status !== 0) {
@@ -149,7 +164,26 @@ function describeDelta(beforeBuf, afterBuf) {
     }
 
     const lines = [];
+
+    // The root entry ("") mirrors package.json's dependency maps, and it is the
+    // one entry that can move with no node_modules entry moving at all:
+    // promoting a transitive already in the tree to a direct dependency —
+    // exactly what #181 did with stream-chain. Without this block that case
+    // reported "formatting or metadata only". Verified by doing it to qs.
+    for (const field of ["dependencies", "devDependencies", "optionalDependencies", "peerDependencies"]) {
+        const stale = before[""]?.[field] ?? {};
+        const fresh = after[""]?.[field] ?? {};
+        for (const name of Object.keys(stale)) {
+            if (!(name in fresh)) lines.push(`  root     ${field}.${name}  in lock file, no longer in package.json`);
+            else if (stale[name] !== fresh[name]) lines.push(`  root     ${field}.${name}  ${stale[name]} -> ${fresh[name]}`);
+        }
+        for (const name of Object.keys(fresh)) {
+            if (!(name in stale)) lines.push(`  root     ${field}.${name}  in package.json (${fresh[name]}), not yet in lock file`);
+        }
+    }
+
     for (const key of Object.keys(before)) {
+        if (key === "") continue;
         if (!(key in after)) lines.push(`  removed  ${key}@${before[key].version ?? "?"}`);
         else if (before[key].version !== after[key].version) {
             lines.push(`  changed  ${key}  ${before[key].version} -> ${after[key].version}`);
@@ -163,7 +197,16 @@ function describeDelta(beforeBuf, afterBuf) {
 
 selfTest();
 
-const before = readFileSync(LOCKFILE);
+let before;
+try {
+    before = readFileSync(LOCKFILE);
+} catch (error) {
+    if (error.code !== "ENOENT") throw error;
+    throw new Error(
+        `package-lock.json is missing at ${LOCKFILE}. This repo commits its lock file — `
+        + `generate one with:\n\n    ${FIX_COMMAND}\n`,
+    );
+}
 const npmVersion = assertPinnedNpm();
 
 /**
@@ -179,7 +222,16 @@ const npmVersion = assertPinnedNpm();
  * redundant write and nothing more — do not read it as a no-trace guarantee.
  */
 function restore() {
-    if (differs(readFileSync(LOCKFILE), before)) writeFileSync(LOCKFILE, before);
+    let current = null;
+    try {
+        current = readFileSync(LOCKFILE);
+    } catch (error) {
+        // The file is gone — npm was killed before its atomic rename landed, or
+        // never wrote at all. Throwing here from inside `finally` would replace
+        // the real error and leave the tree with no lock file; write it back.
+        if (error.code !== "ENOENT") throw error;
+    }
+    if (current === null || differs(current, before)) writeFileSync(LOCKFILE, before);
 }
 
 /**

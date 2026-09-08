@@ -37,6 +37,10 @@ jobs:
   repo-guards:
     name: Repo guards
     runs-on: ubuntu-latest
+    # Both steps finish in seconds; a cold npx fetch of the pinned npm is ~4s.
+    # Without this the default is 360 minutes, and a registry that connects but
+    # never answers would hold the runner for all of them.
+    timeout-minutes: 10
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
