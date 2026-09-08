@@ -82,6 +82,32 @@ describe('Migration Utility', () => {
       expect(turns).toHaveLength(2);
       expect(turns[1].role).toBe('assistant');
     });
+
+    // Guards the stream-json contract the adapter depends on: every array
+    // element is delivered exactly once, in source order, as { key, value }.
+    // stream-json 3.x is a major bump over the 2.x this was written against,
+    // and a silently truncating or reordering streamer would corrupt an
+    // import without failing anything above.
+    it('should stream every array element once, in order', async () => {
+      const filePath = path.join(TMP_DIR, 'gemini-large.json');
+      const entries = Array.from({ length: 500 }, (_, i) => ({
+        role: i % 2 === 0 ? 'user' : 'model',
+        parts: [{ text: `turn-${i}` }],
+        createTime: new Date(Date.UTC(2024, 0, 1, 0, 0, i)).toISOString(),
+      }));
+      fs.writeFileSync(filePath, JSON.stringify(entries));
+
+      const turns: any[] = [];
+      await geminiAdapter.parse(filePath, async (turn) => {
+        turns.push(turn);
+      });
+
+      expect(turns).toHaveLength(entries.length);
+      expect(turns.map(t => t.content)).toEqual(entries.map((_, i) => `turn-${i}`));
+      expect(turns.map(t => t.role)).toEqual(
+        entries.map((_, i) => (i % 2 === 0 ? 'user' : 'assistant')),
+      );
+    });
   });
 
   describe('OpenAI Adapter', () => {

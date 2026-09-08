@@ -78,7 +78,7 @@
   "overrides": {
     "@hono/node-server": "^2.0.5",
     "body-parser": "^2.3.0",
-    "fast-uri": "^3.1.4",
+    "fast-uri": "^3.1.6",
     "hono": "^4.12.27",
     "ip-address": "^10.2.0",
     "protobufjs": "^7.6.5",
@@ -109,7 +109,8 @@
     "postcss": "8.5.23",
     "quickjs-emscripten": "^0.32.0",
     "smol-toml": "^1.7.0",
-    "stream-json": "^2.0.0",
+    "stream-chain": "^4.2.5",
+    "stream-json": "^3.6.0",
     "tldts": "^7.0.27",
     "turndown": "^7.2.2",
     "zod": "^4.3.6"
