@@ -166,15 +166,43 @@ selfTest();
 const before = readFileSync(LOCKFILE);
 const npmVersion = assertPinnedNpm();
 
+/**
+ * Hand the tree back exactly as it arrived. Later CI steps run `npm ci` against
+ * this file, and a check that silently repairs its own subject turns a red
+ * build green without anyone committing the fix.
+ *
+ * Restores CONTENT, not mtime: npm rewrites package-lock.json during
+ * `--package-lock-only` even when the result is byte-identical, so the
+ * timestamp has already moved by the time this runs and no amount of care here
+ * puts it back. Nothing in this repo keys off that mtime, and `npm ci` does
+ * not. The write is skipped when the bytes already match, which saves a
+ * redundant write and nothing more — do not read it as a no-trace guarantee.
+ */
+function restore() {
+    if (differs(readFileSync(LOCKFILE), before)) writeFileSync(LOCKFILE, before);
+}
+
+/**
+ * `finally` unwinds exceptions, not signals. Without these, Ctrl-C during the
+ * ~5s regeneration leaves the developer holding a lock file this script
+ * rewrote — which is the one outcome it promises never to produce.
+ */
+const onSignal = (sig) => {
+    try {
+        restore();
+    } finally {
+        process.exit(sig === "SIGINT" ? 130 : 143);
+    }
+};
+process.on("SIGINT", () => onSignal("SIGINT"));
+process.on("SIGTERM", () => onSignal("SIGTERM"));
+
 let after;
 try {
     runPinnedNpm(["install", "--package-lock-only", "--ignore-scripts", "--no-audit", "--no-fund"]);
     after = readFileSync(LOCKFILE);
 } finally {
-    // Always hand the tree back as it arrived. Later CI steps run `npm ci`
-    // against this file, and a check that silently repairs its own subject
-    // turns a red build green without anyone committing the fix.
-    writeFileSync(LOCKFILE, before);
+    restore();
 }
 
 if (differs(before, after)) {
