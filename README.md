@@ -1447,25 +1447,17 @@ Open [synalux.ai/coder](https://synalux.ai/coder), sign in, connect GitHub, and 
 
 **Review an Agent proposal before applying it.** The diff below proposes a new `add(a, b)` function. Selected changes were then applied and the exact file was saved to the agent branch; rollback was checked afterward.
 
-<p align="center">
-  <img src="docs/screenshots/coder-agent-diff-20260908.png" alt="Live Coder Agent diff showing a proposed add function and Apply selected changes" width="900" />
-</p>
+![Live Coder Agent diff showing a proposed add function and Apply selected changes](docs/screenshots/coder-agent-diff-20260908.png)
 
 **Keep your draft when a remote edit conflicts.** The status bar reports the conflict while the unsaved local edit remains in the editor. Draft recovery was also checked after reloading.
 
-<p align="center">
-  <img src="docs/screenshots/coder-conflict-draft-20260908.png" alt="Coder file editor retaining an unsaved draft with a remote-change conflict message" width="900" />
-</p>
+![Coder file editor retaining an unsaved draft with a remote-change conflict message](docs/screenshots/coder-conflict-draft-20260908.png)
 
 **See collaborators' edits and cursors.** The host receives the guest's edit and cursor in the first capture. The guest receives the host's return edit and cursor in the second. These captures show two Safari tabs using the same authorized account; separate-user and cross-device connections were not covered by this run.
 
-<p align="center">
-  <img src="docs/screenshots/coder-liveshare-host-20260908.png" alt="Live Share host with two participants and the guest cursor on a synchronized edit" width="900" />
-</p>
+![Live Share host with two participants and the guest cursor on a synchronized edit](docs/screenshots/coder-liveshare-host-20260908.png)
 
-<p align="center">
-  <img src="docs/screenshots/coder-liveshare-guest-20260908.png" alt="Live Share guest receiving the host return edit and labeled remote cursor" width="900" />
-</p>
+![Live Share guest receiving the host return edit and labeled remote cursor](docs/screenshots/coder-liveshare-guest-20260908.png)
 
 **Runtime requirements.** Chrome or Edge is recommended for WebContainer package installation, tests, and previews; see [WebContainer browser support](https://developer.stackblitz.com/platform/webcontainers/browser-support). Safari editing and the workflows shown above were exercised, but npm installation still failed in this Safari session. Successful editing does not establish successful code execution. Agent test and type-check execution also depends on the runtime. Cloud AI requires the applicable plan and configured service; local Ollama requires an explicit connection.
 
