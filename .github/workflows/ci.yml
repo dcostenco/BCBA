@@ -33,6 +33,36 @@ jobs:
       - name: Check for private content
         run: node scripts/check-no-private-content.mjs
 
+  # Also runs once, and deliberately BEFORE the matrix would tell you anyway.
+  # The matrix does catch a bad lock file — on 2026-09-08 it caught one six
+  # times over — but it reports it as a raw npm EUSAGE inside "Install
+  # Dependencies", which names a missing package and not the actual cause (the
+  # lock file was written by npm 11; CI runs the npm 10 that setup-node
+  # bundles). This job names the cause and prints the command that fixes it.
+  #
+  # It also catches the case the matrix cannot: a lock file npm 10 ACCEPTS but
+  # would not have written — hand-edited, or stale in a way `npm ci` tolerates.
+  #
+  # npm is NOT pinned in the matrix legs. The canonical npm 10 output is the
+  # superset that 10.8.2, 10.9.8 and 11.6.2 all accept, so the legs are free to
+  # use whatever setup-node gives them; that they do is part of what is tested.
+  lockfile-drift:
+    name: Lock file reproduces under the canonical npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Code
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22.x
+
+      # The npm version lives in the script, not here — one source of truth,
+      # and the script asserts the pin actually took effect before comparing.
+      - name: Check lock file drift
+        run: node scripts/check-lockfile-drift.mjs
+
   cli-integration:
     runs-on: ${{ matrix.os }}
     strategy:
