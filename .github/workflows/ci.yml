@@ -11,16 +11,36 @@ permissions:
   contents: read
 
 jobs:
-  # Runs once, not across the matrix, and is the cheapest job here — a leak is
-  # cheaper to block than to purge. Training corpora reached this PUBLIC repo
-  # twice (2026-05-05, and again 2026-05-25 three weeks after the cleanup), and
-  # on the second occasion a .gitignore rule was the only control. An ignore
-  # rule cannot see an already-tracked path or a `git add -f`; this checks what
-  # is actually tracked. It also runs in prepublishOnly, because by the time a
-  # push-triggered job starts the content is already public.
-  private-content:
-    name: No private content
+  # Repo-wide guards. Runs once, not across the matrix, and is the cheapest job
+  # here — both checks are seconds of work, so they share one checkout rather
+  # than each paying for its own runner.
+  #
+  # No private content: a leak is cheaper to block than to purge. Training
+  # corpora reached this PUBLIC repo twice (2026-05-05, and again 2026-05-25
+  # three weeks after the cleanup), and on the second occasion a .gitignore rule
+  # was the only control. An ignore rule cannot see an already-tracked path or a
+  # `git add -f`; this checks what is actually tracked. It also runs in
+  # prepublishOnly, because by the time a push-triggered job starts the content
+  # is already public.
+  #
+  # Lock file drift: the matrix already fails on a bad lock file — on 2026-09-08
+  # it failed on one six times over — but it surfaces as a raw npm EUSAGE inside
+  # "Install Dependencies", naming a missing package rather than the cause (the
+  # lock file was written by npm 11; CI runs the npm 10 that setup-node
+  # bundles). This names the cause and prints the command that fixes it, and it
+  # catches what the matrix cannot: a lock file npm 10 ACCEPTS but would not
+  # have written — hand-edited, or stale in a way `npm ci` tolerates.
+  #
+  # npm is NOT pinned in the matrix legs. The canonical npm 10 output is the
+  # superset that 10.8.2, 10.9.8 and 11.6.2 all accept, so the legs are free to
+  # use whatever setup-node gives them; that they do is part of what is tested.
+  repo-guards:
+    name: Repo guards
     runs-on: ubuntu-latest
+    # Both steps finish in seconds; a cold npx fetch of the pinned npm is ~4s.
+    # Without this the default is 360 minutes, and a registry that connects but
+    # never answers would hold the runner for all of them.
+    timeout-minutes: 10
     steps:
       - name: Checkout Code
         uses: actions/checkout@v4
@@ -32,6 +52,11 @@ jobs:
 
       - name: Check for private content
         run: node scripts/check-no-private-content.mjs
+
+      # The npm version lives in the script, not here — one source of truth,
+      # and the script asserts the pin actually took effect before comparing.
+      - name: Check lock file drift
+        run: node scripts/check-lockfile-drift.mjs
 
   cli-integration:
     runs-on: ${{ matrix.os }}
