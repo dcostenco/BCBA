@@ -86,15 +86,25 @@ function runPinnedNpm(args, { capture = false } = {}) {
             // limit. A cold fetch of npm plus a full resolve measures ~10s.
             timeout: NPM_TIMEOUT_MS,
             killSignal: "SIGKILL",
+            // On Windows `npx` is npx.cmd, and Node refuses to spawn a .cmd
+            // without a shell (CVE-2024-27980). Every argument here is a bare
+            // token, so the shell has nothing to misquote. CI runs this on
+            // ubuntu; this is for `npm run check:lockfile` on a contributor's
+            // Windows machine, and it is untested there — see the commit.
+            shell: process.platform === "win32",
         },
     );
     if (proc.error) {
-        const timedOut = proc.error.code === "ETIMEDOUT";
+        const { code } = proc.error;
+        const what = `npx npm@${CANONICAL_NPM} ${args.join(" ")}`;
         throw new Error(
-            (timedOut
-                ? `npx npm@${CANONICAL_NPM} ${args.join(" ")} did not finish within ${NPM_TIMEOUT_MS / 1000}s and was killed.\n`
-                : `could not run npx npm@${CANONICAL_NPM}: ${proc.error.message}\n`)
-            + "This check needs network access to fetch the pinned npm and resolve the tree.",
+            code === "ETIMEDOUT"
+                ? `${what} did not finish within ${NPM_TIMEOUT_MS / 1000}s and was killed.\n`
+                  + "This check needs network access to fetch the pinned npm and resolve the tree."
+                : code === "ENOENT"
+                    ? `${what}: npx is not on PATH (${proc.error.message}).\n`
+                      + "This check runs the pinned npm through npx; install Node with npm included."
+                    : `could not run ${what}: ${proc.error.message}`,
         );
     }
     if (proc.status !== 0) {
