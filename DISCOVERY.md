@@ -38,15 +38,26 @@ badge pointed at a different server (dcostenco/BCBA)."
 
 Use the canonical description above; repo URL `https://github.com/dcostenco/prism-coder`.
 
-## Claude community submission — status mechanics (verified 2026-08-18)
+## Claude community submission — status mechanics (verified 2026-09-10)
 
 Walked end-to-end so nobody re-derives this:
 
 - **Status view for individual authors EXISTS**: Claude Console → your org →
-  **Plugin submissions**. Shows `synalux-prism — Submitted and pending review —
-  Aug 6`. (Reached from the Console UI; `platform.claude.com/plugins` as a
-  bare URL 404s — only `/plugins/submit` resolves directly, so navigate from
+  **Plugin submissions**. (Reached from the Console UI; `platform.claude.com/plugins`
+  as a bare URL 404s — only `/plugins/submit` resolves directly, so navigate from
   the Console, not by URL.)
+- **TWO entries are live, both pending** (screenshot-verified 2026-09-10):
+
+  | Entry | Status | Submitted |
+  |---|---|---|
+  | `prism-coder` | Submitted and pending review | Sep 1 |
+  | `synalux-prism` | Submitted and pending review | Aug 6 |
+
+  This is the duplicate the rule below warns against: the Aug 6 entry was never
+  withdrawn before the Sep 1 rename was resubmitted. `prism-coder` is the one
+  that matches the current `.claude-plugin/plugin.json`; `synalux-prism` is a
+  stale snapshot carrying the pre-#128 description. Withdraw or amend the Aug 6
+  entry rather than filing a third.
 - **No confirmation email is sent** for individual submissions — an empty
   inbox does NOT mean the submission was lost. The Console entry is the
   receipt. (Two weeks were nearly written off as a lost submission on this
