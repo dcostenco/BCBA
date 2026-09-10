@@ -86,14 +86,18 @@ behind it are in the
 Prism also ships as a plugin, which registers the MCP server and the startup
 skill for you.
 
-**Claude Code** — from the community marketplace:
+Both hosts install straight from this repository. There is nothing to host and
+no server to run: the catalogue is the `.claude-plugin/marketplace.json` file
+committed here, and your client clones it from GitHub.
+
+**Claude Code:**
 
 ```bash
-/plugin marketplace add anthropics/claude-plugins-community
-/plugin install prism-coder@claude-community
+claude plugin marketplace add dcostenco/prism-coder
+claude plugin install prism-coder@prism
 ```
 
-**Codex** — this repository is itself a plugin marketplace:
+**Codex:**
 
 ```bash
 codex plugin marketplace add dcostenco/prism-coder
