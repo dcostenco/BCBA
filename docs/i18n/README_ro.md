@@ -86,8 +86,9 @@ behind it are in the
 Prism also ships as a plugin, which registers the MCP server and the startup
 skill for you.
 
-This repository is itself a plugin marketplace, so both hosts install the
-plugin from the same source.
+Both hosts install straight from this repository. There is nothing to host and
+no server to run: the catalogue is the `.claude-plugin/marketplace.json` file
+committed here, and your client clones it from GitHub.
 
 **Claude Code:**
 
