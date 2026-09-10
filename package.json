@@ -109,7 +109,7 @@
     "p-limit": "^7.3.0",
     "postcss": "8.5.23",
     "quickjs-emscripten": "^0.32.0",
-    "smol-toml": "^1.7.0",
+    "smol-toml": "^1.7.1",
     "stream-chain": "^4.2.5",
     "stream-json": "^3.6.0",
     "tldts": "^7.0.27",
