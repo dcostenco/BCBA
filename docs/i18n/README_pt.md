@@ -145,6 +145,36 @@ or by re-enabling after each run.
 <details>
 <summary>Release history (optional)</summary>
 
+## What's New in v20.18.1
+
+### Task skills survive compaction and update in place
+
+- **Prompt-routed task skills now return after compaction.** The hook restores
+  the three most recently active task skills alongside the protected-floor
+  digest, so a short follow-up such as `continue` keeps the workflow and visual
+  verification rules that governed the work before context was compacted.
+- **A completed managed-skill sync refreshes active task rules on the next
+  prompt.** The hook compares the materialized generation on disk with its
+  per-session state, re-authorizes every restored name against the current
+  manifest, and injects the current bodies. A downgrade clears stale paid task
+  state; Prism-managed directories cannot use the user-owned local-skill
+  exception.
+- **User-owned local skills now route with their actual body.** A local
+  `SKILL.md` remains usable while signed out, while an entitled platform body
+  takes precedence if both sources use the same name.
+- **Codex hook context is anchored to the user's request.** Routed rules tell
+  the model to execute the preceding user request with the rules applied,
+  avoiding the trailing developer-context placement being mistaken for a new
+  task. The anchor and all restored content share the 9,800-character limit.
+- **Hook version 5 enforces its command version.** A still-running host with a
+  trusted v4 command cannot execute the rewritten v5 script. After upgrading,
+  run `prism connect --refresh --no-models`; Codex must trust both new v5 hook
+  entries in `/hooks`. Restart the host if it has not reloaded the new hook
+  definitions. Once v5 is active, later skill-body generations refresh on the
+  next prompt without another host restart.
+- State names are validated and bounded before they become CLI arguments, and
+  the two-call refresh paths fit inside the host's 15-second hook timeout.
+
 ## What's New in v20.18.0
 
 ### The protected floor rides the bootstrap — and survives compaction

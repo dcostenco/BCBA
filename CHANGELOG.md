@@ -2,6 +2,28 @@
 
 All notable changes to this project will be documented in this file.
 
+## 20.18.1 — 2026-09-12
+
+### Task-skill continuity across compaction and manifest updates
+
+- Restores the three most recently active prompt-routed task skills together
+  with the protected-floor digest after `SessionStart(source=compact)`.
+- Detects a newly materialized managed-skill generation and re-injects current,
+  re-authorized task bodies on the next prompt, including short `continue`
+  turns. A prompt that matches another skill retains the prior active rules.
+- Prevents stale managed paid skills from using the user-owned local-skill
+  entitlement exception during interrupted syncs or downgrades.
+- Injects the actual body of a prompt-matched user-owned local skill even when
+  signed out, while an entitled platform body wins any same-name collision.
+- Anchors injected context to the user's preceding request for Codex's trailing
+  developer-message placement and includes the anchor inside the host budget.
+- Bounds and validates hook state before forming CLI arguments, keeps the two
+  worst-case CLI waits below the host timeout, and makes the v5 script reject
+  stale v4 command invocations so rewritten code never inherits old trust.
+- Upgrade procedure: `prism connect --refresh --no-models`, then trust both v5
+  entries in Codex `/hooks`. Restart only when the running host has not reloaded
+  the new definitions; subsequent skill-content generations refresh in place.
+
 ## 20.18.0 — 2026-09-01
 
 ### Protected-floor digest in the bootstrap + post-compaction re-injection

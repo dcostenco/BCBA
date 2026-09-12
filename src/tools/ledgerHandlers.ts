@@ -2341,7 +2341,7 @@ export function buildSessionFactsLine(facts: Record<string, string | number | bo
  * only", never takes down startup.
  */
 export async function collectSkillTriggersOnThisMachine(): Promise<
-  { triggers: Record<string, string[]>; localNames: Set<string> } | undefined
+  { triggers: Record<string, string[]>; localNames: Set<string>; localBodies: Map<string, string> } | undefined
 > {
   try {
     const { collectScopedTriggers, collectLocalSkillTriggers } = await import("./scopedSkillTriggers.js");
@@ -2350,6 +2350,7 @@ export async function collectSkillTriggersOnThisMachine(): Promise<
     // __proto__/constructor must be a plain data key, not an inherited read.
     const merged: Record<string, string[]> = Object.create(null);
     const localNames = new Set<string>();
+    const localBodies = new Map<string, string>();
     const errors: Array<{ skill: string; reason: string }> = [];
 
     const settings = await getAllSettings();
@@ -2386,7 +2387,11 @@ export async function collectSkillTriggersOnThisMachine(): Promise<
       for (const [pattern, names] of Object.entries(local.triggers)) {
         (merged[pattern] ||= []).push(...names);
       }
-      for (const name of local.names) localNames.add(name);
+      for (const name of local.names) {
+        localNames.add(name);
+        const body = local.bodies.get(name);
+        if (body) localBodies.set(name, body);
+      }
       errors.push(...local.errors);
     } catch (error) {
       debugLog(`[skill-triggers] local scan skipped: ${error instanceof Error ? error.message : String(error)}`);
@@ -2397,7 +2402,7 @@ export async function collectSkillTriggersOnThisMachine(): Promise<
       // feature fixes — a skill that is installed and never fires.
       debugLog(`[skill-triggers] ignored trigger in "${error.skill}": ${error.reason}`);
     }
-    return Object.keys(merged).length > 0 ? { triggers: merged, localNames } : undefined;
+    return Object.keys(merged).length > 0 ? { triggers: merged, localNames, localBodies } : undefined;
   } catch (error) {
     debugLog(`[skill-triggers] collection failed: ${error instanceof Error ? error.message : String(error)}`);
     return undefined;
@@ -2450,6 +2455,42 @@ export async function runPromptRouteFromCache(prompt: string, loaded: string[]) 
       const v = Number(await getSetting("skill_manifest:routing_version", ""));
       return Number.isFinite(v) && v > 0 ? v : undefined;
     },
+  });
+}
+
+/**
+ * Rebuild task-specific hook context after compaction or a manifest update.
+ *
+ * The names came from this hook session's prior, entitlement-checked route.
+ * They still pass through the current cached entitlement set so a downgrade
+ * cannot resurrect a paid skill from stale hook state. This deliberately uses
+ * routePrompt's normal delivery and budget logic instead of reading native
+ * files in the host hook.
+ */
+export async function runNamedSkillRouteFromCache(names: string[]) {
+  const safeNames = [...new Set(names.filter((name) => NATIVE_SKILL_NAME.test(name)))];
+  if (safeNames.length === 0) {
+    return { names: [], alreadyLoaded: [], overflow: [], text: "No skills supplied — nothing to re-inject." };
+  }
+  const { routePrompt } = await import("./promptRouteHandler.js");
+  const { _setStorage } = await import("./skillRouting.js");
+  _setStorage(
+    async (key, value) => { await setSetting(key, value); },
+    async (key) => getSetting(key, ""),
+  );
+  return routePrompt("restore task-specific skills after compaction", [], {
+    resolvePromptSkillNames: async () => safeNames,
+    collectTriggers: collectSkillTriggersOnThisMachine,
+    entitledNames: async () => {
+      try {
+        const parsed: unknown = JSON.parse(await getSetting("skill_manifest:names", "[]"));
+        return new Set(Array.isArray(parsed) ? parsed.filter((name): name is string => typeof name === "string") : []);
+      } catch {
+        return new Set<string>();
+      }
+    },
+    getBody: (name: string) => getSetting(`skill:${name}`, ""),
+    manifestVersion: async () => undefined,
   });
 }
 

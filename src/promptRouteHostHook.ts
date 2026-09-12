@@ -41,7 +41,7 @@ import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
 
 /** Bump to force the on-disk script to be rewritten on the next ensure. */
-export const PROMPT_ROUTE_HOOK_VERSION = "4";
+export const PROMPT_ROUTE_HOOK_VERSION = "5";
 /** SessionStart matcher: only the post-compaction fire carries the digest.
  *  The script re-checks `source` itself, so a host that ignores matchers on
  *  this event still injects nothing at startup/resume. */
@@ -54,7 +54,8 @@ const HOOK_DIR = "prism-route";
 const COMMAND_SIGNATURE = `${HOOK_DIR}/${SCRIPT_FILE}`;
 /**
  * The command registered in the host config carries the version as an
- * argument (the script ignores argv — it reads stdin). This is a SECURITY
+ * argument. The script reads stdin for the hook payload and rejects a stale
+ * version argument before executing routing logic. This is a SECURITY
  * property, found by an external probe of Codex 0.146: Codex's hook-trust
  * hash covers the CONFIGURED DEFINITION, not the file the command points at.
  * With a stable command and a version-refreshed script, every prism upgrade
@@ -97,13 +98,27 @@ import shutil
 import subprocess
 import sys
 
+INLINE_CONTEXT_CAP = 9800
+CLI_TIMEOUT_SECONDS = 6
+MAX_STATE_SKILLS = 500
+SKILL_NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,127}$")
+TASK_CONTEXT_ANCHOR = (
+    "[Context attached to the user's request above. Do not acknowledge this context separately. "
+    "Execute the user's request now, applying the following task rules.]"
+)
+
+
+def content_cap():
+    return INLINE_CONTEXT_CAP - len(TASK_CONTEXT_ANCHOR) - 2
+
 
 def emit(extra=None, event="UserPromptSubmit"):
     out = {"continue": True, "suppressOutput": True}
     if extra:
+        anchored = TASK_CONTEXT_ANCHOR + "\\n\\n" + extra[:content_cap()]
         out["hookSpecificOutput"] = {
             "hookEventName": event,
-            "additionalContext": extra,
+            "additionalContext": anchored,
         }
     print(json.dumps(out))
 
@@ -116,7 +131,7 @@ def run_cli_json(cli, args, stdin_text=""):
             input=stdin_text,
             capture_output=True,
             text=True,
-            timeout=10,
+            timeout=CLI_TIMEOUT_SECONDS,
         )
     except Exception:
         return None
@@ -146,6 +161,70 @@ def session_state_path(payload):
     session = re.sub(r"[^A-Za-z0-9._-]", "_", session).lstrip(".")[:80] or "default"
     state_dir = os.path.join(os.path.dirname(os.path.abspath(__file__)), "state")
     return state_dir, os.path.join(state_dir, session + ".json")
+
+
+def read_state(state_path):
+    try:
+        with open(state_path) as fh:
+            value = json.load(fh)
+    except Exception:
+        return {"generation": "", "names": []}
+    if isinstance(value, list):
+        return {"generation": "", "names": clean_names(value)}
+    if not isinstance(value, dict):
+        return {"generation": "", "names": []}
+    generation = value.get("generation") if isinstance(value.get("generation"), str) else ""
+    names = value.get("names") if isinstance(value.get("names"), list) else []
+    return {"generation": generation, "names": clean_names(names)}
+
+
+def clean_names(values):
+    kept = []
+    seen = set()
+    for value in values:
+        if not isinstance(value, str) or not SKILL_NAME_RE.fullmatch(value) or value in seen:
+            continue
+        kept.append(value)
+        seen.add(value)
+    return kept[-MAX_STATE_SKILLS:]
+
+
+def write_state(state_dir, state_path, generation, names):
+    temp_path = state_path + ".tmp-" + str(os.getpid())
+    try:
+        os.makedirs(state_dir, exist_ok=True)
+        with open(temp_path, "w") as fh:
+            json.dump({"generation": generation, "names": names}, fh)
+        os.replace(temp_path, state_path)
+    except Exception:
+        try:
+            os.remove(temp_path)
+        except Exception:
+            pass
+
+
+def current_generation():
+    override = os.environ.get("PRISM_ROUTE_SKILLS_INDEX")
+    index_path = override or os.path.expanduser("~/.agents/skills/.prism-managed-skills.json")
+    try:
+        with open(index_path) as fh:
+            value = json.load(fh)
+        generation = value.get("generation") if isinstance(value, dict) else ""
+        return generation if isinstance(generation, str) else ""
+    except Exception:
+        return ""
+
+
+def reinject(cli, names, budget):
+    selected = names[-3:]
+    if not selected or budget < 256:
+        return {"ok": True, "names": [], "text": ""}
+    data = run_cli_json(cli, [
+        "reinject-skills", "--names", ",".join(selected), "--budget", str(budget)
+    ])
+    if not isinstance(data, dict) or data.get("ok") is not True:
+        return {"ok": False, "names": [], "text": ""}
+    return data
 
 
 def payload_field(payload, *keys):
@@ -178,24 +257,32 @@ def on_session_start(payload):
     if not source.startswith("compact"):
         emit(event="SessionStart")
         return
-    # The skills injected before compaction are gone with it; forget the
-    # dedupe list so the next matching prompt can bring them back.
     state_dir, state_path = session_state_path(payload)
-    try:
-        os.remove(state_path)
-    except Exception:
-        pass
+    state = read_state(state_path)
+    generation = current_generation()
     cli = find_cli()
     if not cli:
         emit(event="SessionStart")
         return
     data = run_cli_json(cli, ["floor-digest"])
-    text = (data or {}).get("text") or ""
-    names = [n for n in ((data or {}).get("names") or []) if isinstance(n, str)]
-    if not names or not isinstance(text, str) or not text:
-        emit(event="SessionStart")
-        return
-    emit(text, event="SessionStart")
+    raw_floor_text = (data or {}).get("text") or ""
+    floor_names = clean_names((data or {}).get("names") or [])
+    floor_text = raw_floor_text if floor_names and isinstance(raw_floor_text, str) else ""
+    remaining = content_cap() - len(floor_text) - (2 if floor_text else 0)
+    restored = reinject(cli, state["names"], remaining)
+    restored_names = clean_names(restored.get("names") or [])
+    restored_text = restored.get("text") if isinstance(restored.get("text"), str) else ""
+    # If the floor consumes the whole host budget or the CLI fails, keep the
+    # names but leave the generation stale so the next prompt retries. A
+    # successful empty result means the current entitlement revoked them.
+    if remaining < 256 and state["names"]:
+        write_state(state_dir, state_path, "", state["names"])
+    elif restored.get("ok") is not True:
+        write_state(state_dir, state_path, "", state["names"])
+    else:
+        write_state(state_dir, state_path, generation, restored_names)
+    combined = "\\n\\n".join(part for part in (floor_text, restored_text if restored_names else "") if part)
+    emit(combined[:content_cap()], event="SessionStart")
 
 
 def find_cli():
@@ -236,27 +323,59 @@ def main():
         or payload.get("user_prompt")
         or ""
     ).strip()
-    # Slash commands and micro-prompts ("ok", "merge") never route; skipping
-    # them keeps the common turn free.
-    if len(prompt) < 6 or prompt.startswith("/"):
+    state_dir, state_path = session_state_path(payload)
+    state = read_state(state_path)
+    loaded = state["names"]
+    generation = current_generation()
+    generation_changed = bool(loaded and generation and generation != state["generation"])
+
+    cli = find_cli()
+    if not cli:
+        emit()
+        return
+
+    # Slash commands never route. A micro-prompt normally stays free, but a
+    # just-materialized generation must replace any older task rules before
+    # even "continue" reaches the model.
+    if prompt.startswith("/"):
+        emit()
+        return
+    if len(prompt) < 6:
+        if generation_changed:
+            restored = reinject(cli, loaded, content_cap())
+            restored_names = clean_names(restored.get("names") or [])
+            restored_text = restored.get("text") if isinstance(restored.get("text"), str) else ""
+            if restored.get("ok") is True:
+                write_state(state_dir, state_path, generation, restored_names)
+            else:
+                write_state(state_dir, state_path, "", loaded)
+            if restored_names and restored_text:
+                emit(restored_text)
+                return
         emit()
         return
     # A pasted log can be megabytes; triggers live in the first human-sized
     # stretch, and the CLI caps identically on its side.
     prompt = prompt[:100_000]
 
-    state_dir, state_path = session_state_path(payload)
-    loaded = []
-    try:
-        with open(state_path) as fh:
-            data = json.load(fh)
-            if isinstance(data, list):
-                loaded = [n for n in data if isinstance(n, str)]
-    except Exception:
-        pass
-
-    cli = find_cli()
-    if not cli:
+    if generation_changed:
+        # Ask the normal matcher what this prompt needs, then rebuild one
+        # current-generation payload from the prior active set plus new hits.
+        # Emitting the matcher text directly would lose the old active rules
+        # whenever this prompt happened to match a different skill.
+        data = run_cli_json(cli, ["route-prompt", "--loaded", ""], prompt)
+        routed_names = clean_names((data or {}).get("names") or [])
+        active = [n for n in state["names"] if n not in routed_names] + routed_names
+        restored = reinject(cli, active, content_cap())
+        restored_names = clean_names(restored.get("names") or [])
+        restored_text = restored.get("text") if isinstance(restored.get("text"), str) else ""
+        if restored.get("ok") is True:
+            write_state(state_dir, state_path, generation, restored_names)
+        else:
+            write_state(state_dir, state_path, "", active)
+        if restored_names and restored_text:
+            emit(restored_text)
+            return
         emit()
         return
 
@@ -264,24 +383,27 @@ def main():
     if data is None:
         emit()
         return
-    names = [n for n in (data.get("names") or []) if isinstance(n, str)]
+    names = clean_names(data.get("names") or [])
     text = data.get("text") or ""
     if not names or not text:
+        touched = clean_names(data.get("alreadyLoaded") or [])
+        if touched and not generation_changed:
+            reordered = [n for n in loaded if n not in touched] + touched
+            write_state(state_dir, state_path, generation, reordered)
         emit()
         return
 
-    try:
-        os.makedirs(state_dir, exist_ok=True)
-        merged = loaded + [n for n in names if n not in loaded]
-        with open(state_path, "w") as fh:
-            json.dump(merged, fh)
-    except Exception:
-        pass  # dedupe degrades, injection still happens
+    touched = clean_names(data.get("alreadyLoaded") or [])
+    merged = [n for n in loaded if n not in touched and n not in names] + touched + names
+    write_state(state_dir, state_path, generation, clean_names(merged))
 
     emit(text)
 
 
 if __name__ == "__main__":
+    if "--v${PROMPT_ROUTE_HOOK_VERSION}" not in sys.argv[1:]:
+        print(json.dumps({"continue": True, "suppressOutput": True}))
+        sys.exit(0)
     try:
         main()
     except Exception:

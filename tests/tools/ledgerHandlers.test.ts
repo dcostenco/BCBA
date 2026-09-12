@@ -212,6 +212,7 @@ import { awaitSkillManifestSync, readNativeSkillBody } from "../../src/skillMani
 import { SKILL_DIGEST_UNAVAILABLE } from "../../src/utils/skillDigest.js";
 import {
   collectSkillTriggersOnThisMachine,
+  runNamedSkillRouteFromCache,
   sessionSaveLedgerHandler,
   sessionSaveHandoffHandler,
   sessionSaveExperienceHandler,
@@ -311,6 +312,28 @@ describe("ledgerHandlers", () => {
     mockGetAllSettings.mockResolvedValue({});
     mockRequireContextLoadedForProject.mockResolvedValue(null);
     mockRegisterContextLoaded.mockResolvedValue();
+  });
+
+  describe("runNamedSkillRouteFromCache", () => {
+    it("re-injects only names in the current entitlement manifest", async () => {
+      mockGetSetting.mockImplementation(async (key: string, fallback = "") => ({
+        "skill_manifest:names": JSON.stringify(["current-fixture"]),
+        "skill:current-fixture": "CURRENT BODY",
+        "skill:stale-paid-fixture": "STALE PAID BODY",
+      }[key] ?? fallback));
+      mockGetAllSettings.mockResolvedValue({});
+
+      const result = await runNamedSkillRouteFromCache([
+        "current-fixture",
+        "stale-paid-fixture",
+        "../unsafe",
+      ]);
+
+      expect(result.names).toEqual(["current-fixture"]);
+      expect(result.text).toContain("CURRENT BODY");
+      expect(result.text).not.toContain("STALE PAID BODY");
+      expect(result.text).not.toContain("../unsafe");
+    });
   });
 
   // ====================================================================

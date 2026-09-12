@@ -102,6 +102,15 @@ describe("install", () => {
     expect(entry.hooks[0].additionalContextLimit).toBe(0);
   });
 
+  it("keeps two worst-case CLI waits inside the host hook timeout", () => {
+    ensurePromptRouteHook({ homeDir: home, env: {} });
+    const cfg = JSON.parse(readFileSync(join(home, ".codex", "hooks.json"), "utf8"));
+    const hostTimeout = cfg.hooks.UserPromptSubmit[0].hooks[0].timeout as number;
+    const cliTimeout = Number(PROMPT_ROUTE_HOOK_SCRIPT.match(/CLI_TIMEOUT_SECONDS = (\d+)/)?.[1]);
+    expect(cliTimeout).toBeGreaterThan(0);
+    expect(cliTimeout * 2).toBeLessThan(hostTimeout);
+  });
+
   it("claude registration does NOT carry the codex-only field — no unknown keys in settings.json", () => {
     ensurePromptRouteHook({ homeDir: home, env: {} });
     const entry = claudeConfig().hooks.UserPromptSubmit.find((e: unknown) => JSON.stringify(e).includes("prism-route"));
@@ -407,6 +416,7 @@ describe.skipIf(process.platform === "win32")("the hook script — never breaks 
   let hookDir: string;
   let script: string;
   let stub: string;
+  let skillIndex: string;
 
   beforeEach(() => {
     hookDir = join(home, ".claude", "hooks", "prism-route");
@@ -414,6 +424,8 @@ describe.skipIf(process.platform === "win32")("the hook script — never breaks 
     script = join(hookDir, "on_prompt.py");
     writeFileSync(script, PROMPT_ROUTE_HOOK_SCRIPT);
     chmodSync(script, 0o755);
+    skillIndex = join(home, "managed-skills.json");
+    writeFileSync(skillIndex, JSON.stringify({ generation: "generation-1" }));
     // Stub prism CLI: routes when --loaded is empty, dedupes when not;
     // answers floor-digest with a fixed digest; logs every invocation so a
     // test can assert the CLI was NOT called.
@@ -423,8 +435,16 @@ describe.skipIf(process.platform === "win32")("the hook script — never breaks 
       `#!/bin/bash
 echo "$1" >> "${join(home, "stub-calls.log")}"
 if [ "$1" = "floor-digest" ]; then echo '{"names":["prime-directive","ask-first"],"text":"Prism: context was compacted.\\n- floor line"}'; exit 0; fi
+if [ "$1" = "reinject-skills" ]; then
+  if [[ "$3" == *"task-flow-ui-ux-review"* ]]; then echo '{"ok":true,"names":["visual-screenshot-verification","task-flow-ui-ux-review"],"text":"BOTH CURRENT SKILL BODIES"}';
+  else echo '{"ok":true,"names":["visual-screenshot-verification"],"text":"SKILL BODY RESTORED"}'; fi
+  exit 0
+fi
 if [ "$1" != "route-prompt" ]; then echo '{"names":[],"text":""}'; exit 0; fi
-if [ "$3" = "" ]; then echo '{"names":["visual-screenshot-verification"],"text":"SKILL BODY HERE"}'; else echo '{"names":[],"text":""}'; fi
+prompt=$(cat)
+if [ "$3" = "" ] && [[ "$prompt" == *"totals are not sticky"* ]]; then echo '{"names":["visual-screenshot-verification"],"alreadyLoaded":[],"text":"SKILL BODY HERE"}';
+elif [ "$3" = "" ] && [[ "$prompt" == *"review the workflow"* ]]; then echo '{"names":["task-flow-ui-ux-review"],"alreadyLoaded":[],"text":"NEW SKILL BODY"}';
+else echo '{"names":[],"alreadyLoaded":["visual-screenshot-verification"],"text":""}'; fi
 `,
     );
     chmodSync(stub, 0o755);
@@ -433,12 +453,14 @@ if [ "$3" = "" ]; then echo '{"names":["visual-screenshot-verification"],"text":
     const log = join(home, "stub-calls.log");
     return existsSync(log) ? readFileSync(log, "utf8").trim().split("\n").filter(Boolean) : [];
   };
+  const routedContext = (out: ReturnType<typeof run>): string =>
+    out.hookSpecificOutput?.additionalContext ?? "";
 
   const run = (payload: unknown): { continue: boolean; suppressOutput?: boolean; hookSpecificOutput?: { hookEventName?: string; additionalContext?: string } } =>
     JSON.parse(
-      execFileSync("python3", [script], {
+      execFileSync("python3", [script, `--v${PROMPT_ROUTE_HOOK_VERSION}`], {
         input: JSON.stringify(payload),
-        env: { ...process.env, PRISM_ROUTE_CLI: stub },
+        env: { ...process.env, HOME: home, PRISM_ROUTE_CLI: stub, PRISM_ROUTE_SKILLS_INDEX: skillIndex },
         encoding: "utf8",
       }).trim(),
     );
@@ -446,15 +468,75 @@ if [ "$3" = "" ]; then echo '{"names":["visual-screenshot-verification"],"text":
   it("injects context on a routed prompt", () => {
     const out = run({ prompt: "the totals are not sticky", session_id: "s1" });
     expect(out.continue).toBe(true);
-    expect(out.hookSpecificOutput?.additionalContext).toBe("SKILL BODY HERE");
+    expect(routedContext(out)).toContain("Execute the user's request now");
+    expect(routedContext(out)).toMatch(/task rules\.\]\n\nSKILL BODY HERE$/);
+    expect(routedContext(out).length).toBeLessThanOrEqual(9_800);
+    expect(PROMPT_ROUTE_HOOK_SCRIPT).toContain("os.replace(temp_path, state_path)");
   });
 
   it("dedupes on the second prompt of the same session via its state file", () => {
     run({ prompt: "the totals are not sticky", session_id: "s2" });
     const state = JSON.parse(readFileSync(join(hookDir, "state", "s2.json"), "utf8"));
-    expect(state).toEqual(["visual-screenshot-verification"]);
+    expect(state).toEqual({ generation: "generation-1", names: ["visual-screenshot-verification"] });
     const out = run({ prompt: "the totals are not sticky", session_id: "s2" });
     expect(out.hookSpecificOutput).toBeUndefined();
+  });
+
+  it("re-injects updated task skills on continue after a new manifest generation — no host restart", () => {
+    run({ prompt: "the totals are not sticky", session_id: "s-generation" });
+    writeFileSync(skillIndex, JSON.stringify({ generation: "generation-2" }));
+    const out = run({ prompt: "continue", session_id: "s-generation" });
+    expect(routedContext(out)).toContain("Execute the user's request now");
+    expect(routedContext(out)).toMatch(/task rules\.\]\n\nSKILL BODY RESTORED$/);
+    expect(stubCalls()).toEqual(["route-prompt", "route-prompt", "reinject-skills"]);
+    expect(JSON.parse(readFileSync(join(hookDir, "state", "s-generation.json"), "utf8"))).toEqual({
+      generation: "generation-2",
+      names: ["visual-screenshot-verification"],
+    });
+  });
+
+  it("keeps prior active rules when a new generation prompt matches another skill", () => {
+    run({ prompt: "the totals are not sticky", session_id: "s-generation-new-hit" });
+    writeFileSync(skillIndex, JSON.stringify({ generation: "generation-2" }));
+    const out = run({ prompt: "review the workflow now", session_id: "s-generation-new-hit" });
+    expect(routedContext(out)).toMatch(/task rules\.\]\n\nBOTH CURRENT SKILL BODIES$/);
+    expect(JSON.parse(readFileSync(join(hookDir, "state", "s-generation-new-hit.json"), "utf8"))).toEqual({
+      generation: "generation-2",
+      names: ["visual-screenshot-verification", "task-flow-ui-ux-review"],
+    });
+  });
+
+  it("sanitizes and bounds persisted names before using them as CLI arguments", () => {
+    const stateDir = join(hookDir, "state");
+    mkdirSync(stateDir, { recursive: true });
+    const many = Array.from({ length: 510 }, (_, i) => `skill-${i}`);
+    writeFileSync(join(stateDir, "s-corrupt.json"), JSON.stringify({
+      generation: "old-generation",
+      names: ["../escape", "UPPER", ...many, "skill-509"],
+    }));
+    writeFileSync(stub, `#!/bin/bash
+if [ "$1" = "route-prompt" ]; then echo '{"names":[],"alreadyLoaded":[],"text":""}'; exit 0; fi
+if [ "$1" = "reinject-skills" ]; then printf '%s' "$3" > "${join(home, "reinject-names.log")}"; echo '{"ok":true,"names":[],"text":""}'; exit 0; fi
+echo '{"names":[],"text":""}'
+`);
+    chmodSync(stub, 0o755);
+    run({ prompt: "continue", session_id: "s-corrupt" });
+    const sent = readFileSync(join(home, "reinject-names.log"), "utf8").split(",");
+    expect(sent).toEqual(["skill-507", "skill-508", "skill-509"]);
+    expect(sent).not.toContain("../escape");
+    expect(sent).not.toContain("UPPER");
+  });
+
+  it("a stale trusted command cannot execute a rewritten hook body", () => {
+    const out = JSON.parse(
+      execFileSync("python3", [script, "--v4"], {
+        input: JSON.stringify({ prompt: "the totals are not sticky", session_id: "s-stale-command" }),
+        env: { ...process.env, HOME: home, PRISM_ROUTE_CLI: stub, PRISM_ROUTE_SKILLS_INDEX: skillIndex },
+        encoding: "utf8",
+      }).trim(),
+    );
+    expect(out).toEqual({ continue: true, suppressOutput: true });
+    expect(stubCalls()).toEqual([]);
   });
 
   it("passes through micro-prompts and slash commands without invoking the CLI", () => {
@@ -469,7 +551,7 @@ if [ "$3" = "" ]; then echo '{"names":["visual-screenshot-verification"],"text":
     // itself must then be launched by absolute path.
     const python3 = execFileSync("which", ["python3"], { encoding: "utf8" }).trim();
     const out = JSON.parse(
-      execFileSync(python3, [script], {
+      execFileSync(python3, [script, `--v${PROMPT_ROUTE_HOOK_VERSION}`], {
         input: JSON.stringify({ prompt: "the totals are not sticky" }),
         env: { ...process.env, PRISM_ROUTE_CLI: "/does/not/exist", PATH: "/nonexistent", HOME: home },
         encoding: "utf8",
@@ -485,7 +567,7 @@ echo '{"names":["visual-screenshot-verification"],"text":"BODY"}'
 `);
     chmodSync(stub, 0o755);
     const out = run({ prompt: "the totals are not sticky", session_id: "s9" });
-    expect(out.hookSpecificOutput?.additionalContext).toBe("BODY");
+    expect(routedContext(out)).toMatch(/task rules\.\]\n\nBODY$/);
   });
 
   describe("SessionStart — the floor comes back after a compaction, and only then", () => {
@@ -493,19 +575,135 @@ echo '{"names":["visual-screenshot-verification"],"text":"BODY"}'
       const out = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact" });
       expect(out.continue).toBe(true);
       expect(out.hookSpecificOutput?.hookEventName).toBe("SessionStart");
-      expect(out.hookSpecificOutput?.additionalContext).toBe("Prism: context was compacted.\n- floor line");
+      expect(routedContext(out)).toContain("Execute the user's request now");
+      expect(routedContext(out)).toMatch(/task rules\.\]\n\nPrism: context was compacted\.\n- floor line$/);
       expect(stubCalls()).toEqual(["floor-digest"]);
     });
 
-    it("forgets the session's dedupe list on compaction so the routed skills can come back", () => {
+    it("re-injects routed task skills during compaction so a following continue keeps the rules", () => {
       run({ prompt: "the totals are not sticky", session_id: "s-compact-2" });
       const state = join(hookDir, "state", "s-compact-2.json");
       expect(existsSync(state)).toBe(true);
-      run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact-2" });
-      expect(existsSync(state)).toBe(false);
-      // The next matching prompt routes again instead of being deduped away.
-      const out = run({ prompt: "the totals are not sticky", session_id: "s-compact-2" });
-      expect(out.hookSpecificOutput?.additionalContext).toBe("SKILL BODY HERE");
+      const compact = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact-2" });
+      expect(compact.hookSpecificOutput?.additionalContext).toContain("Prism: context was compacted.");
+      expect(compact.hookSpecificOutput?.additionalContext).toContain("SKILL BODY RESTORED");
+      expect(JSON.parse(readFileSync(state, "utf8"))).toEqual({
+        generation: "generation-1",
+        names: ["visual-screenshot-verification"],
+      });
+      const continued = run({ prompt: "continue", session_id: "s-compact-2" });
+      expect(continued.hookSpecificOutput).toBeUndefined();
+      expect(stubCalls()).toEqual(["route-prompt", "floor-digest", "reinject-skills", "route-prompt"]);
+    });
+
+    it("restores routed task skills when the floor digest is temporarily unavailable", () => {
+      run({ prompt: "the totals are not sticky", session_id: "s-compact-no-floor" });
+      writeFileSync(stub, `#!/bin/bash
+echo "$1" >> "${join(home, "stub-calls.log")}"
+if [ "$1" = "floor-digest" ]; then echo '{"names":[],"text":""}'; exit 0; fi
+if [ "$1" = "reinject-skills" ]; then echo '{"ok":true,"names":["visual-screenshot-verification"],"text":"TASK SURVIVED WITHOUT FLOOR"}'; exit 0; fi
+echo '{"names":[],"alreadyLoaded":[],"text":""}'
+`);
+      chmodSync(stub, 0o755);
+      const compact = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact-no-floor" });
+      expect(compact.hookSpecificOutput?.additionalContext).toContain("TASK SURVIVED WITHOUT FLOOR");
+      expect(JSON.parse(readFileSync(join(hookDir, "state", "s-compact-no-floor.json"), "utf8"))).toEqual({
+        generation: "generation-1",
+        names: ["visual-screenshot-verification"],
+      });
+      expect(stubCalls()).toEqual(["route-prompt", "floor-digest", "reinject-skills"]);
+    });
+
+    it("does not mark an older rendered body as current when generation changes during compaction", () => {
+      run({ prompt: "the totals are not sticky", session_id: "s-compact-race" });
+      writeFileSync(stub, `#!/bin/bash
+echo "$1" >> "${join(home, "stub-calls.log")}"
+if [ "$1" = "floor-digest" ]; then echo '{"names":["prime-directive"],"text":"GENERATION ONE FLOOR"}'; exit 0; fi
+if [ "$1" = "reinject-skills" ]; then
+  printf '%s' '{"generation":"generation-2"}' > "${skillIndex}"
+  echo '{"ok":true,"names":["visual-screenshot-verification"],"text":"GENERATION ONE BODY"}'
+  exit 0
+fi
+if [ "$1" = "route-prompt" ]; then echo '{"names":[],"alreadyLoaded":[],"text":""}'; exit 0; fi
+echo '{"names":[],"text":""}'
+`);
+      chmodSync(stub, 0o755);
+      const compact = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact-race" });
+      expect(routedContext(compact)).toContain("GENERATION ONE BODY");
+      expect(JSON.parse(readFileSync(join(hookDir, "state", "s-compact-race.json"), "utf8"))).toEqual({
+        generation: "generation-1",
+        names: ["visual-screenshot-verification"],
+      });
+      run({ prompt: "continue", session_id: "s-compact-race" });
+      expect(stubCalls()).toEqual(["route-prompt", "floor-digest", "reinject-skills", "route-prompt", "reinject-skills"]);
+    });
+
+    it("clears stale task state when the current entitlement no longer returns those skills", () => {
+      run({ prompt: "the totals are not sticky", session_id: "s-downgraded" });
+      writeFileSync(stub, `#!/bin/bash
+echo "$1" >> "${join(home, "stub-calls.log")}"
+if [ "$1" = "floor-digest" ]; then echo '{"names":["prism-startup"],"text":"FREE FLOOR"}'; else echo '{"ok":true,"names":[],"text":""}'; fi
+`);
+      chmodSync(stub, 0o755);
+      const out = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-downgraded" });
+      expect(routedContext(out)).toMatch(/task rules\.\]\n\nFREE FLOOR$/);
+      expect(JSON.parse(readFileSync(join(hookDir, "state", "s-downgraded.json"), "utf8"))).toEqual({
+        generation: "generation-1",
+        names: [],
+      });
+    });
+
+    it("keeps task names retryable when the floor leaves no safe body budget", () => {
+      run({ prompt: "the totals are not sticky", session_id: "s-floor-full" });
+      const floor = "F".repeat(9_700);
+      writeFileSync(stub, `#!/bin/bash
+echo "$1" >> "${join(home, "stub-calls.log")}"
+if [ "$1" = "floor-digest" ]; then printf '{"names":["prime-directive"],"text":"%s"}\\n' '${floor}'; else echo '{"names":[],"text":""}'; fi
+`);
+      chmodSync(stub, 0o755);
+      const out = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-floor-full" });
+      expect(routedContext(out)).toContain("Execute the user's request now");
+      expect(routedContext(out)).toHaveLength(9_800);
+      expect(JSON.parse(readFileSync(join(hookDir, "state", "s-floor-full.json"), "utf8"))).toEqual({
+        generation: "",
+        names: ["visual-screenshot-verification"],
+      });
+      expect(stubCalls()).toEqual(["route-prompt", "floor-digest"]);
+    });
+
+    it("keeps task names retryable when re-injection transport fails during compaction", () => {
+      run({ prompt: "the totals are not sticky", session_id: "s-compact-timeout" });
+      writeFileSync(stub, `#!/bin/bash
+echo "$1" >> "${join(home, "stub-calls.log")}"
+if [ "$1" = "floor-digest" ]; then echo '{"names":["prime-directive"],"text":"FREE FLOOR"}'; exit 0; fi
+if [ "$1" = "reinject-skills" ]; then echo '{"ok":false,"names":[],"text":""}'; exit 0; fi
+echo '{"names":[],"text":""}'
+`);
+      chmodSync(stub, 0o755);
+      const out = run({ hook_event_name: "SessionStart", source: "compact", session_id: "s-compact-timeout" });
+      expect(routedContext(out)).toMatch(/task rules\.\]\n\nFREE FLOOR$/);
+      expect(JSON.parse(readFileSync(join(hookDir, "state", "s-compact-timeout.json"), "utf8"))).toEqual({
+        generation: "",
+        names: ["visual-screenshot-verification"],
+      });
+    });
+
+    it("keeps task names retryable when re-injection fails after a manifest refresh", () => {
+      run({ prompt: "the totals are not sticky", session_id: "s-generation-timeout" });
+      writeFileSync(skillIndex, JSON.stringify({ generation: "generation-2" }));
+      writeFileSync(stub, `#!/bin/bash
+echo "$1" >> "${join(home, "stub-calls.log")}"
+if [ "$1" = "reinject-skills" ]; then echo '{"ok":false,"names":[],"text":""}'; exit 0; fi
+if [ "$1" = "route-prompt" ]; then echo '{"names":[],"alreadyLoaded":[],"text":""}'; exit 0; fi
+echo '{"names":[],"text":""}'
+`);
+      chmodSync(stub, 0o755);
+      const out = run({ prompt: "continue", session_id: "s-generation-timeout" });
+      expect(out.hookSpecificOutput).toBeUndefined();
+      expect(JSON.parse(readFileSync(join(hookDir, "state", "s-generation-timeout.json"), "utf8"))).toEqual({
+        generation: "",
+        names: ["visual-screenshot-verification"],
+      });
     });
 
     it.each(["startup", "resume", "clear", ""])("passes through on source=%j without invoking the CLI — the bootstrap already carries the digest", (source) => {
@@ -524,7 +722,7 @@ echo '{"names":["visual-screenshot-verification"],"text":"BODY"}'
     it("passes through when the CLI is missing or fails — a compaction must never break the session", () => {
       const python3 = execFileSync("which", ["python3"], { encoding: "utf8" }).trim();
       const out = JSON.parse(
-        execFileSync(python3, [script], {
+        execFileSync(python3, [script, `--v${PROMPT_ROUTE_HOOK_VERSION}`], {
           input: JSON.stringify({ hook_event_name: "SessionStart", source: "compact" }),
           env: { ...process.env, PRISM_ROUTE_CLI: "/does/not/exist", PATH: "/nonexistent", HOME: home },
           encoding: "utf8",
@@ -555,7 +753,7 @@ echo '{"names":["visual-screenshot-verification"],"text":"BODY"}'
     ])("recognises the compaction fire under alternative payload spellings: %j", (payload) => {
       const out = run({ ...payload, session_id: "s-alias" });
       expect(out.hookSpecificOutput?.hookEventName).toBe("SessionStart");
-      expect(out.hookSpecificOutput?.additionalContext).toBe("Prism: context was compacted.\n- floor line");
+      expect(routedContext(out)).toMatch(/task rules\.\]\n\nPrism: context was compacted\.\n- floor line$/);
       expect(stubCalls()).toEqual(["floor-digest"]);
     });
 
@@ -577,13 +775,13 @@ echo '{"names":["visual-screenshot-verification"],"text":"BODY"}'
 
     it("an aliased event that is NOT SessionStart still routes the prompt", () => {
       const out = run({ hookEventName: "UserPromptSubmit", prompt: "the totals are not sticky", session_id: "s-alias-prompt" });
-      expect(out.hookSpecificOutput?.additionalContext).toBe("SKILL BODY HERE");
+      expect(routedContext(out)).toMatch(/task rules\.\]\n\nSKILL BODY HERE$/);
     });
   });
 
   it("passes through on garbage stdin", () => {
     const out = JSON.parse(
-      execFileSync("python3", [script], {
+      execFileSync("python3", [script, `--v${PROMPT_ROUTE_HOOK_VERSION}`], {
         input: "not json at all",
         env: { ...process.env, PRISM_ROUTE_CLI: stub },
         encoding: "utf8",

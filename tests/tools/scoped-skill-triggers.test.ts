@@ -265,6 +265,50 @@ describe("local-scope skills — written to disk, never in the settings cache", 
     // Without the name the caller's entitlement filter would drop the match,
     // since a local file is not in the delivery manifest.
     expect(result.names).toEqual(["my-local"]);
+    expect(result.bodies.get("my-local")).toContain("# my-local");
+  });
+
+  it("never labels a Prism-managed directory as user-owned local entitlement", async () => {
+    const body = `---\nname: paid-managed\ndescription: d\nprompt_triggers:\n  - "\\bmanaged\\b"\n---\n# paid`;
+    const result = await collectLocalSkillTriggers(
+      ["/root/.agents/skills"],
+      fakeFs({
+        "/root/.agents/skills/paid-managed/SKILL.md": body,
+        "/root/.agents/skills/paid-managed/.prism-managed.json": JSON.stringify({
+          owner: "prism-skill-sync-v1",
+          generation: "old-paid-generation",
+        }),
+      }),
+      join,
+    );
+    // Its trigger remains available to the matcher, but the current manifest
+    // must authorize it; stale managed files never get the local bypass.
+    expect(result.triggers["\\bmanaged\\b"]).toEqual(["paid-managed"]);
+    expect(result.names).toEqual([]);
+    expect(result.bodies.has("paid-managed")).toBe(false);
+  });
+
+  it("uses the managed index when a paid directory marker is missing or corrupt", async () => {
+    const body = `---\nname: paid-managed\ndescription: d\nprompt_triggers:\n  - "\\bmanaged\\b"\n---\n# paid`;
+    for (const marker of [undefined, "{corrupt"]) {
+      const files: Record<string, string> = {
+        "/root/.agents/skills/.prism-managed-skills.json": JSON.stringify({
+          owner: "prism-skill-sync-v1",
+          generation: "old-paid-generation",
+          skills: ["paid-managed"],
+        }),
+        "/root/.agents/skills/paid-managed/SKILL.md": body,
+      };
+      if (marker !== undefined) files["/root/.agents/skills/paid-managed/.prism-managed.json"] = marker;
+      const result = await collectLocalSkillTriggers(
+        ["/root/.agents/skills"],
+        fakeFs(files),
+        join,
+      );
+      expect(result.triggers["\\bmanaged\\b"]).toEqual(["paid-managed"]);
+      expect(result.names).toEqual([]);
+      expect(result.bodies.has("paid-managed")).toBe(false);
+    }
   });
 
   it("ignores skills without triggers, missing roots, and oversized files", async () => {
@@ -278,6 +322,7 @@ describe("local-scope skills — written to disk, never in the settings cache", 
     );
     expect(result.triggers).toEqual({});
     expect(result.names).toEqual([]);
+    expect(result.bodies.size).toBe(0);
   });
 
   it("does not count the same skill twice when both host roots mirror it", async () => {

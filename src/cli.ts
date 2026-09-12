@@ -577,11 +577,46 @@ program
       const shaped = result.names.length > 0
         ? reshapeForInlineBudget(result, HOOK_INLINE_SAFE_CHARS, writeRouteOffload)
         : { text: '' };
-      const payload = JSON.stringify({ names: result.names, text: result.names.length > 0 ? shaped.text : '' });
+      const payload = JSON.stringify({
+        names: result.names,
+        alreadyLoaded: result.alreadyLoaded,
+        text: result.names.length > 0 ? shaped.text : '',
+      });
       await new Promise<void>((resolveWrite) => process.stdout.write(payload + '\n', () => resolveWrite()));
     } catch {
       // Never break the hook: an empty result is a routing miss, not an error.
       await new Promise<void>((resolveWrite) => process.stdout.write('{"names":[],"text":""}\n', () => resolveWrite()));
+    } finally {
+      try { await closeStorage(); } catch { /* exit anyway */ }
+      process.exit(0);
+    }
+  });
+
+// Re-inject the most recently active task skills after the host discards its
+// transcript, or immediately after a new managed manifest reaches disk. Names
+// are re-authorized against the cached manifest before any body is returned.
+program
+  .command('reinject-skills')
+  .description('Render previously active, still-entitled skills for the host hook.')
+  .requiredOption('--names <names>', 'Comma-separated skill names from the hook session state')
+  .option('--budget <chars>', 'Maximum inline characters', String(9_800))
+  .action(async (options: { names: string; budget?: string }) => {
+    try {
+      const names = options.names.split(',').map((name) => name.trim()).filter(Boolean);
+      const requestedBudget = Number.parseInt(options.budget ?? '', 10);
+      const { runNamedSkillRouteFromCache } = await import('./tools/ledgerHandlers.js');
+      const { reshapeForInlineBudget, HOOK_INLINE_SAFE_CHARS } = await import('./tools/promptRouteHandler.js');
+      const budget = Number.isFinite(requestedBudget)
+        ? Math.max(256, Math.min(HOOK_INLINE_SAFE_CHARS, requestedBudget))
+        : HOOK_INLINE_SAFE_CHARS;
+      const result = await runNamedSkillRouteFromCache(names);
+      const shaped = result.names.length > 0
+        ? reshapeForInlineBudget(result, budget, writeRouteOffload)
+        : { text: '' };
+      const payload = JSON.stringify({ ok: true, names: result.names, text: result.names.length > 0 ? shaped.text : '' });
+      await new Promise<void>((resolveWrite) => process.stdout.write(payload + '\n', () => resolveWrite()));
+    } catch {
+      await new Promise<void>((resolveWrite) => process.stdout.write('{"ok":false,"names":[],"text":""}\n', () => resolveWrite()));
     } finally {
       try { await closeStorage(); } catch { /* exit anyway */ }
       process.exit(0);
