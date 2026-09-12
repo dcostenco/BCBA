@@ -187,6 +187,10 @@ export function extractSkillTriggers(skillName: string, content: string): Trigge
  */
 const MAX_LOCAL_SKILLS = 300;
 const MAX_LOCAL_FILE_BYTES = 64 * 1024;
+const MANAGED_SKILL_MARKER = ".prism-managed.json";
+const MANAGED_SKILL_INDEX = ".prism-managed-skills.json";
+const MANAGED_SKILL_OWNER = "prism-skill-sync-v1";
+const LOCAL_SKILL_NAME = /^[a-z0-9][a-z0-9_-]{0,127}$/;
 
 export async function collectLocalSkillTriggers(
   roots: string[],
@@ -196,8 +200,13 @@ export async function collectLocalSkillTriggers(
     readFile: (path: string) => Promise<string>;
   },
   join: (...parts: string[]) => string,
-): Promise<TriggerExtraction & { names: string[] }> {
-  const merged: TriggerExtraction & { names: string[] } = { triggers: Object.create(null) as Record<string, string[]>, errors: [], names: [] };
+): Promise<TriggerExtraction & { names: string[]; bodies: Map<string, string> }> {
+  const merged: TriggerExtraction & { names: string[]; bodies: Map<string, string> } = {
+    triggers: Object.create(null) as Record<string, string[]>,
+    errors: [],
+    names: [],
+    bodies: new Map(),
+  };
   let budget = MAX_LOCAL_SKILLS;
   const seen = new Set<string>();
 
@@ -207,6 +216,19 @@ export async function collectLocalSkillTriggers(
       entries = await fs.readdir(root);
     } catch {
       continue;                                  // root absent — normal
+    }
+    const indexedManaged = new Set<string>();
+    try {
+      const index = JSON.parse(await fs.readFile(join(root, MANAGED_SKILL_INDEX))) as unknown;
+      if (index && typeof index === "object" && !Array.isArray(index)
+          && (index as { owner?: unknown }).owner === MANAGED_SKILL_OWNER
+          && Array.isArray((index as { skills?: unknown }).skills)) {
+        for (const value of (index as { skills: unknown[] }).skills) {
+          if (typeof value === "string" && LOCAL_SKILL_NAME.test(value)) indexedManaged.add(value);
+        }
+      }
+    } catch {
+      // A missing index is normal for a machine with user-owned skills only.
     }
     for (const name of entries) {
       if (budget-- <= 0) break;
@@ -219,7 +241,21 @@ export async function collectLocalSkillTriggers(
         if (!content.includes("prompt_triggers")) continue;
         seen.add(name);
         const extracted = extractSkillTriggers(name, content);
-        if (Object.keys(extracted.triggers).length > 0) merged.names.push(name);
+        let prismManaged = indexedManaged.has(name);
+        try {
+          const marker = JSON.parse(await fs.readFile(join(root, name, MANAGED_SKILL_MARKER))) as unknown;
+          prismManaged ||= Boolean(
+            marker && typeof marker === "object" && !Array.isArray(marker)
+              && (marker as { owner?: unknown }).owner === MANAGED_SKILL_OWNER,
+          );
+        } catch {
+          // No valid Prism marker means the directory is user-owned local
+          // content and remains eligible for the local entitlement exception.
+        }
+        if (Object.keys(extracted.triggers).length > 0 && !prismManaged) {
+          merged.names.push(name);
+          merged.bodies.set(name, content);
+        }
         for (const [pattern, names] of Object.entries(extracted.triggers)) {
           (merged.triggers[pattern] ||= []).push(...names);
         }

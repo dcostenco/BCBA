@@ -109,6 +109,51 @@ describe("injection", () => {
     expect(r.names).toEqual(["ghost"]);
     expect(r.text).toMatch(/no content on this machine/i);
   });
+
+  it("injects a user-owned local body when no delivered cache body exists", async () => {
+    const r = await routePrompt("local workflow", [], deps({
+      resolvePromptSkillNames: async () => ["my-local"],
+      collectTriggers: async () => ({
+        triggers: { "\\blocal\\b": ["my-local"] },
+        localNames: new Set(["my-local"]),
+        localBodies: new Map([["my-local", "# my-local\nLOCAL BODY"]]),
+      }),
+      entitledNames: async () => new Set(),
+      getBody: async () => "",
+    }));
+    expect(r.names).toEqual(["my-local"]);
+    expect(r.text).toContain("LOCAL BODY");
+  });
+
+  it("does not let a same-name local file shadow a delivered platform body", async () => {
+    const r = await routePrompt("shared workflow", [], deps({
+      resolvePromptSkillNames: async () => ["shared-skill"],
+      collectTriggers: async () => ({
+        triggers: { "\\bshared\\b": ["shared-skill"] },
+        localNames: new Set(["shared-skill"]),
+        localBodies: new Map([["shared-skill", "LOCAL SHADOW"]]),
+      }),
+      entitledNames: async () => new Set(["shared-skill"]),
+      getBody: async () => "PLATFORM BODY",
+    }));
+    expect(r.text).toContain("PLATFORM BODY");
+    expect(r.text).not.toContain("LOCAL SHADOW");
+  });
+
+  it("does not expose a stale cached paid body through an unentitled same-name local skill", async () => {
+    const r = await routePrompt("shared workflow", [], deps({
+      resolvePromptSkillNames: async () => ["shared-skill"],
+      collectTriggers: async () => ({
+        triggers: { "\\bshared\\b": ["shared-skill"] },
+        localNames: new Set(["shared-skill"]),
+        localBodies: new Map([["shared-skill", "SAFE LOCAL BODY"]]),
+      }),
+      entitledNames: async () => new Set(),
+      getBody: async () => "STALE PAID BODY",
+    }));
+    expect(r.text).toContain("SAFE LOCAL BODY");
+    expect(r.text).not.toContain("STALE PAID BODY");
+  });
 });
 
 describe("host inline budget — hosts hard-cap hook context (Claude Code 10k chars, Codex ~2.5k tokens)", () => {
@@ -278,12 +323,16 @@ describe("entitlement and privacy", () => {
     // the entitlement filter would drop them without this bypass — the same
     // one session_bootstrap applies.
     const r = await routePrompt("ui/ux", [], deps({
-      resolvePromptSkillNames: async () => ["team-private-skill"],
+      resolvePromptSkillNames: async () => ["local-private-skill"],
       entitledNames: async () => new Set<string>(),
-      collectTriggers: async () => ({ triggers: {}, localNames: new Set(["team-private-skill"]) }),
+      collectTriggers: async () => ({
+        triggers: {},
+        localNames: new Set(["local-private-skill"]),
+        localBodies: new Map([["local-private-skill", "# local\nLocal body"]]),
+      }),
     }));
-    expect(r.names).toEqual(["team-private-skill"]);
-    expect(r.text).toContain("Account-scoped body");
+    expect(r.names).toEqual(["local-private-skill"]);
+    expect(r.text).toContain("Local body");
   });
 
   it("still routes when on-device trigger collection fails", async () => {

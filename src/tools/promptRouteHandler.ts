@@ -55,7 +55,7 @@ export interface PromptRouteDeps {
   ) => Promise<string[]>;
   /** Delivered + local frontmatter triggers collected on this machine. */
   collectTriggers: () => Promise<
-    { triggers: Record<string, string[]>; localNames: Set<string> } | undefined
+    { triggers: Record<string, string[]>; localNames: Set<string>; localBodies?: Map<string, string> } | undefined
   >;
   /** Names this account is entitled to inject. */
   entitledNames: () => Promise<Set<string>>;
@@ -133,7 +133,13 @@ export async function routePrompt(
   const delivered: string[] = [];
   let budget = MAX_ROUTED_CHARS;
   for (const name of selected) {
-    const body = (await deps.getBody(name).catch(() => "")).trim();
+    // Select by the authorization source, not by which body happens to be
+    // non-empty. Otherwise an unentitled local same-name skill could expose a
+    // stale paid body left in the cache after a downgrade.
+    const platformAuthorized = entitled.has(name);
+    const body = (platformAuthorized
+      ? await deps.getBody(name).catch(() => "")
+      : scoped?.localBodies?.get(name) ?? "").trim();
     if (!body) {
       // Routed but undeliverable is the exact defect this feature exists to
       // surface. Say so rather than returning a name with nothing behind it.
